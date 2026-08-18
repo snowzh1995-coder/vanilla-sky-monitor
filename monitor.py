@@ -24,11 +24,35 @@ from pathlib import Path
 BASE_URL = "https://ticket.vanillasky.ge"
 TICKETS_URL = f"{BASE_URL}/en/tickets"
 DEFAULT_CONFIG = {
-    "target_date": "2026-10-01",
-    "departure_id": 6,
-    "departure_name": "Mestia",
-    "arrival_id": 7,
-    "arrival_name": "Natakhtari",
+    "targets": [
+        *[
+            {
+                "target_date": f"2026-09-{day:02d}",
+                "departure_id": 7,
+                "departure_name": "Natakhtari",
+                "arrival_id": 6,
+                "arrival_name": "Mestia",
+                "notify_on_release": False,
+            }
+            for day in range(26, 31)
+        ],
+        {
+            "target_date": "2026-09-30",
+            "departure_id": 6,
+            "departure_name": "Mestia",
+            "arrival_id": 7,
+            "arrival_name": "Natakhtari",
+            "notify_on_release": False,
+        },
+        {
+            "target_date": "2026-10-01",
+            "departure_id": 6,
+            "departure_name": "Mestia",
+            "arrival_id": 7,
+            "arrival_name": "Natakhtari",
+            "notify_on_release": True,
+        },
+    ],
     "poll_seconds": 60,
     "notification": {
         "provider": "telegram",
@@ -112,7 +136,9 @@ def load_config() -> dict:
         "VS_TELEGRAM_CHAT_ID", str(notice.get("telegram_chat_id", ""))
     )
     notice["ntfy_topic"] = os.getenv("VS_NTFY_TOPIC", notice.get("ntfy_topic", ""))
-    cfg["target_date"] = os.getenv("VS_TARGET_DATE", cfg["target_date"])
+    override_date = os.getenv("VS_TARGET_DATE", "").strip()
+    if override_date and cfg.get("targets"):
+        cfg["targets"][0]["target_date"] = override_date
     cfg["poll_seconds"] = int(os.getenv("VS_POLL_SECONDS", cfg["poll_seconds"]))
     return cfg
 
@@ -181,10 +207,10 @@ def RawBodyOpener(body: bytes) -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(RawBodyHandler(body))
 
 
-def calendar_dates(config: dict) -> set[str]:
+def calendar_dates(target: dict) -> set[str]:
     endpoint = (
         f"{BASE_URL}/custom/check-flight/"
-        f"{config['departure_id']}/{config['arrival_id']}"
+        f"{target['departure_id']}/{target['arrival_id']}"
     )
     payload = fetch_json(endpoint)
     if not isinstance(payload, dict) or not isinstance(payload.get("from"), list):
@@ -197,7 +223,7 @@ def strip_tags(fragment: str) -> str:
     return re.sub(r"\s+", " ", html_lib.unescape(text)).strip()
 
 
-def confirm_bookable(config: dict) -> tuple[bool, str]:
+def confirm_bookable(target: dict) -> tuple[bool, str]:
     cookies = http.cookiejar.CookieJar()
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
     page = request(TICKETS_URL, opener=opener).decode("utf-8", errors="replace")
@@ -207,12 +233,12 @@ def confirm_bookable(config: dict) -> tuple[bool, str]:
     if not build_id_match:
         raise RuntimeError("没有找到网站查询表单，网站结构可能已变化")
 
-    query_date = datetime.strptime(config["target_date"], "%Y-%m-%d").strftime("%m/%d/%Y")
+    query_date = datetime.strptime(target["target_date"], "%Y-%m-%d").strftime("%m/%d/%Y")
     form = {
         "types": "0",
-        "departure": str(config["departure_id"]),
+        "departure": str(target["departure_id"]),
         "date_picker": query_date,
-        "arrive": str(config["arrival_id"]),
+        "arrive": str(target["arrival_id"]),
         "person_count": "1",
         "person_types[adult]": "1",
         "person_types[child]": "0",
@@ -229,8 +255,8 @@ def confirm_bookable(config: dict) -> tuple[bool, str]:
         not no_ticket
         and 'class="flight-item' in result
         and 'value="Continue"' in result
-        and config["departure_name"].lower() in result.lower()
-        and config["arrival_name"].lower() in result.lower()
+        and target["departure_name"].lower() in result.lower()
+        and target["arrival_name"].lower() in result.lower()
     )
 
     if not bookable:
@@ -250,19 +276,19 @@ def confirm_bookable(config: dict) -> tuple[bool, str]:
     return True, "，".join(details) if details else "查询页已出现可选择航班和 Continue 按钮"
 
 
-def check_once(config: dict) -> tuple[str, str]:
-    target = config["target_date"]
-    dates = calendar_dates(config)
-    if target not in dates:
+def check_target(target: dict, dates: set[str] | None = None) -> tuple[str, str]:
+    target_date = target["target_date"]
+    dates = dates if dates is not None else calendar_dates(target)
+    if target_date not in dates:
         latest = max(dates) if dates else "暂无日期"
         return "not_released", f"尚未放票（目前最晚可选日期：{latest}）"
-    available, detail = confirm_bookable(config)
+    available, detail = confirm_bookable(target)
     return ("available", detail) if available else ("released_no_inventory", detail)
 
 
-def message_for(config: dict, status: str, detail: str) -> str:
-    route = f"{config['departure_name']} → {config['arrival_name']}"
-    date = config["target_date"]
+def message_for(target: dict, status: str, detail: str) -> str:
+    route = f"{target['departure_name']} → {target['arrival_name']}"
+    date = target["target_date"]
     if status == "available":
         return (
             "🚨 Vanilla Sky 有票了！\n"
@@ -277,15 +303,32 @@ def message_for(config: dict, status: str, detail: str) -> str:
     )
 
 
-def process_status(config: dict, status: str, detail: str, state: dict) -> bool:
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {detail}", flush=True)
+def target_key(target: dict) -> str:
+    return (
+        f"{target['target_date']}:"
+        f"{target['departure_id']}-{target['arrival_id']}"
+    )
+
+
+def process_status(
+    config: dict, target: dict, status: str, detail: str, state: dict
+) -> bool:
+    route = f"{target['departure_name']} → {target['arrival_name']}"
+    print(
+        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+        f"{target['target_date']} {route}：{detail}",
+        flush=True,
+    )
+    target_state = state.setdefault("targets", {}).setdefault(target_key(target), {})
     state_key = "available_notified" if status == "available" else "release_notified"
-    if status == "not_released" or state.get(state_key):
+    if status == "not_released" or target_state.get(state_key):
         return False
-    notify(config, message_for(config, status, detail), urgent=(status == "available"))
-    state[state_key] = utc_now()
+    if status == "released_no_inventory" and not target.get("notify_on_release", False):
+        return False
+    notify(config, message_for(target, status, detail), urgent=(status == "available"))
+    target_state[state_key] = utc_now()
     if status == "available":
-        state.setdefault("release_notified", state[state_key])
+        target_state.setdefault("release_notified", target_state[state_key])
     save_json(STATE_PATH, state)
     print("通知已发送。", flush=True)
     return status == "available"
@@ -358,19 +401,19 @@ def main() -> int:
 
     state = load_json(STATE_PATH, {})
     consecutive_errors = 0
-    print(
-        f"开始监控：{config['target_date']} "
-        f"{config['departure_name']} → {config['arrival_name']}\n"
-        f"查询间隔：{max(30, int(config['poll_seconds']))} 秒。按 Ctrl+C 可停止。",
-        flush=True,
-    )
+    print(f"开始监控 {len(config['targets'])} 个航班日期。", flush=True)
 
     while True:
         try:
-            status, detail = check_once(config)
+            route_dates: dict[tuple[int, int], set[str]] = {}
+            for target in config["targets"]:
+                route_key = (target["departure_id"], target["arrival_id"])
+                if route_key not in route_dates:
+                    route_dates[route_key] = calendar_dates(target)
+                status, detail = check_target(target, route_dates[route_key])
+                process_status(config, target, status, detail, state)
             consecutive_errors = 0
-            available_sent = process_status(config, status, detail, state)
-            if available_sent or args.check_once:
+            if args.check_once:
                 return 0
         except KeyboardInterrupt:
             print("\n监控已停止。")
