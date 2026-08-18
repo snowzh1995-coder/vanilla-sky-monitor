@@ -1,1 +1,56 @@
+name: Vanilla Sky ticket monitor
 
+on:
+  schedule:
+    - cron: "3-58/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      test_notification:
+        description: "Send a Telegram test message"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vanillasky-ticket-monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check tickets
+        env:
+          VS_NOTIFY_PROVIDER: telegram
+          VS_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          VS_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ "${{ github.event.inputs.test_notification }}" = "true" ]; then
+            python monitor.py --test-notification
+          else
+            python monitor.py --check-once
+          fi
+
+      - name: Save notification state
+        if: ${{ github.event.inputs.test_notification != 'true' }}
+        run: |
+          if [ -f monitor_state.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add monitor_state.json
+            if ! git diff --cached --quiet; then
+              git commit -m "Record Vanilla Sky monitor alert"
+              git push
+            fi
+          fi
