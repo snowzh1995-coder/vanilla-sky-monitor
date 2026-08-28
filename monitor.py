@@ -25,27 +25,16 @@ BASE_URL = "https://ticket.vanillasky.ge"
 TICKETS_URL = f"{BASE_URL}/en/tickets"
 DEFAULT_CONFIG = {
     "targets": [
-        *[
-            {
-                "target_date": f"2026-09-{day:02d}",
-                "departure_id": 7,
-                "departure_name": "Natakhtari",
-                "arrival_id": 6,
-                "arrival_name": "Mestia",
-                "notify_on_release": False,
-            }
-            for day in range(26, 31)
-        ],
         {
-            "target_date": "2026-09-30",
-            "departure_id": 6,
-            "departure_name": "Mestia",
-            "arrival_id": 7,
-            "arrival_name": "Natakhtari",
+            "target_date": "2026-09-28",
+            "departure_id": 5,
+            "departure_name": "Kutaisi",
+            "arrival_id": 6,
+            "arrival_name": "Mestia",
             "notify_on_release": False,
         },
         {
-            "target_date": "2026-10-01",
+            "target_date": "2026-10-02",
             "departure_id": 6,
             "departure_name": "Mestia",
             "arrival_id": 7,
