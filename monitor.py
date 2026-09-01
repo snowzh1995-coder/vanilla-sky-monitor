@@ -201,10 +201,31 @@ def calendar_dates(target: dict) -> set[str]:
         f"{BASE_URL}/custom/check-flight/"
         f"{target['departure_id']}/{target['arrival_id']}"
     )
-    payload = fetch_json(endpoint)
-    if not isinstance(payload, dict) or not isinstance(payload.get("from"), list):
+
+    for attempt in range(3):
+        payload = fetch_json(endpoint)
+
+        if isinstance(payload, dict) and isinstance(payload.get("from"), list):
+            return {str(item) for item in payload["from"]}
+
+        if payload == {}:
+            print(
+                f"Vanilla Sky 日期接口暂时返回空数据 "
+                f"({attempt + 1}/3)，稍后重试……",
+                flush=True,
+            )
+            if attempt < 2:
+                time.sleep(5)
+            continue
+
         raise RuntimeError(f"网站返回了无法识别的日期数据：{payload!r}")
-    return {str(item) for item in payload["from"]}
+
+    print(
+        f"{target['departure_name']} → {target['arrival_name']} "
+        "本次没有取得日期数据，跳过本次检查。",
+        flush=True,
+    )
+    return set()
 
 
 def strip_tags(fragment: str) -> str:
