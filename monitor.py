@@ -146,18 +146,23 @@ def notify(config: dict, message: str, *, urgent: bool = False) -> None:
     provider = str(notice.get("provider", "")).lower()
     if provider == "telegram":
         token = str(notice.get("telegram_bot_token", "")).strip()
-        chat_id = str(notice.get("telegram_chat_id", "")).strip()
-        if not token or not chat_id:
+        chat_ids = [
+            item.strip()
+            for item in re.split(r"[,;\s]+", str(notice.get("telegram_chat_id", "")))
+            if item.strip()
+        ]
+        if not token or not chat_ids:
             raise RuntimeError("Telegram 尚未设置，请先运行：python monitor.py --setup")
-        telegram_api(
-            token,
-            "sendMessage",
-            {
-                "chat_id": chat_id,
-                "text": message,
-                "disable_web_page_preview": "false",
-            },
-        )
+        for chat_id in chat_ids:
+            telegram_api(
+                token,
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": message,
+                    "disable_web_page_preview": "false",
+                },
+            )
         return
 
     if provider == "ntfy":
@@ -201,31 +206,10 @@ def calendar_dates(target: dict) -> set[str]:
         f"{BASE_URL}/custom/check-flight/"
         f"{target['departure_id']}/{target['arrival_id']}"
     )
-
-    for attempt in range(3):
-        payload = fetch_json(endpoint)
-
-        if isinstance(payload, dict) and isinstance(payload.get("from"), list):
-            return {str(item) for item in payload["from"]}
-
-        if payload == {}:
-            print(
-                f"Vanilla Sky 日期接口暂时返回空数据 "
-                f"({attempt + 1}/3)，稍后重试……",
-                flush=True,
-            )
-            if attempt < 2:
-                time.sleep(5)
-            continue
-
+    payload = fetch_json(endpoint)
+    if not isinstance(payload, dict) or not isinstance(payload.get("from"), list):
         raise RuntimeError(f"网站返回了无法识别的日期数据：{payload!r}")
-
-    print(
-        f"{target['departure_name']} → {target['arrival_name']} "
-        "本次没有取得日期数据，跳过本次检查。",
-        flush=True,
-    )
-    return set()
+    return {str(item) for item in payload["from"]}
 
 
 def strip_tags(fragment: str) -> str:
